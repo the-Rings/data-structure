@@ -3,6 +3,18 @@ package backtrack;
 import java.util.*;
 
 public class Combine {
+  /**
+   * 有m个key，每个key有m个值，如何列出所有的k-v组合？
+   * 例如：
+   * { 
+   *   a: [1, 2, 3],
+   *   b: [4, 5, 6],
+   *   c: [7, 8, 9],
+   *   d: [!, @, #],
+   * }
+   * 第一步：先获得参数名的子集
+   * 第二步：根据某个参数名的组合（例如：{b, c}），从b对应的[4, 5, 6]中任选出一个值，从c对应的[7, 8, 9]中任选出一个值， 拼出3*3=9中不同的组合输出
+   */
   Map<String, List<String>> valuesMap = new HashMap<>();
 
   private List<List<String>> paramsSubset(List<String> keys) {
