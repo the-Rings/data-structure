@@ -13,7 +13,9 @@ import net.objecthunter.exp4j.ExpressionBuilder;
 public class ExpressionForJava {
   public BigDecimal exprEval(String expr, Map<String, Double> variables) {
     /**
-     * <dependency> <groupId>net.objecthunter</groupId> <artifactId>exp4j</artifactId>
+     * <dependency>
+     *   <groupId>net.objecthunter</groupId>
+     *   <artifactId>exp4j</artifactId>
      * <version>0.4.8</version> </dependency>
      */
     Expression e = new ExpressionBuilder(expr).variables(variables.keySet()).build();
