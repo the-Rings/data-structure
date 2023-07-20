@@ -18,6 +18,7 @@ repositories {
 
 dependencies {
     implementation 'com.alibaba:fastjson:1.1.36'
+    implementation 'net.objecthunter:exp4j:0.4.8'
 }
 
 // 创建缺失的src目录

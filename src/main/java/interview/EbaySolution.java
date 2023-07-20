@@ -1,9 +1,8 @@
+package interview;
+
 import java.util.*;
 
-/**
- * 求两个数组的公共元素
- *
- */
+/** 求两个数组的公共元素 */
 public class EbaySolution {
   public void a(int[] nums1, int[] nums2) {
     Arrays.sort(nums1);

@@ -1,15 +1,13 @@
 package stack;
 
-/**
- * 浏览器的前进后退功能的实现
- */
+/** 浏览器前进后退功能 */
 public class Browser {
   private final ArrayStack<String> X = new ArrayStack<>(3);
   private final ArrayStack<String> Y = new ArrayStack<>(3);
 
   public void forward() {
     X.push(Y.pop());
-    System.out.println(X.toString() + "----->" +Y.toString());
+    System.out.println(X.toString() + "----->" + Y.toString());
   }
 
   public void back() {
@@ -19,6 +17,7 @@ public class Browser {
 
   /**
    * 模拟浏览
+   *
    * @param item
    */
   public void look(String item) {
