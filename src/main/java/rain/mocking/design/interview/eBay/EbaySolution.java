@@ -1,4 +1,4 @@
-package interview;
+package interview.eBay;
 
 import java.util.*;
 
