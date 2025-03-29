@@ -1,4 +1,4 @@
-package hash;
+package rain.mocking.design.hash;
 
 public class JavaHashMap {
   static int hash(Object key) {

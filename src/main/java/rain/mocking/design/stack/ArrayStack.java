@@ -1,4 +1,4 @@
-package stack;
+package rain.mocking.design.stack;
 
 import java.util.Arrays;
 

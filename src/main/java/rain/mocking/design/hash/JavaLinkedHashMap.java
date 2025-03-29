@@ -1,4 +1,4 @@
-package hash;
+package rain.mocking.design.hash;
 
 import java.util.HashMap;
 import java.util.LinkedHashMap;

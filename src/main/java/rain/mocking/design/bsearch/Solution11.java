@@ -1,4 +1,4 @@
-package bsearch;
+package rain.mocking.design.bsearch;
 
 /**
  * @author mao

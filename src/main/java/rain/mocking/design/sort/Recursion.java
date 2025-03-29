@@ -1,4 +1,4 @@
-package sort;
+package rain.mocking.design.sort;
 
 public class Recursion {
   static int f(int n) {

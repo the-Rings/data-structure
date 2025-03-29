@@ -1,4 +1,4 @@
-package linked_list;
+package rain.mocking.design.linked_list;
 
 public class SLinkedNode<T> {
   public T data;

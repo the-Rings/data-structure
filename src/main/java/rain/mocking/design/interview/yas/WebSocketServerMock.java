@@ -1,4 +1,4 @@
-package interview.yas;
+package rain.mocking.design.interview.yas;
 
 enum YasTickTypeEnum {
   TRADE,

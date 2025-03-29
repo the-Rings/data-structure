@@ -1,4 +1,4 @@
-package interview.book.brian;
+package rain.mocking.design.interview.book.brian;
 
 import java.math.BigInteger;
 import java.util.concurrent.BlockingQueue;

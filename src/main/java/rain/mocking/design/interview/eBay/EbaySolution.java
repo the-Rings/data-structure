@@ -1,4 +1,4 @@
-package interview.eBay;
+package rain.mocking.design.interview.eBay;
 
 import java.util.*;
 

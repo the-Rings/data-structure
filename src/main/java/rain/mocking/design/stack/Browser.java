@@ -1,4 +1,4 @@
-package stack;
+package rain.mocking.design.stack;
 
 /** 浏览器前进后退功能 */
 public class Browser {

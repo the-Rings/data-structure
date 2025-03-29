@@ -1,4 +1,4 @@
-package queue;
+package rain.mocking.design.queue;
 
 import java.util.Random;
 

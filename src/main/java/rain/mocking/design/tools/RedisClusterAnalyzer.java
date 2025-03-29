@@ -1,28 +1,25 @@
-import redis.clients.jedis.Connection;
-import redis.clients.jedis.JedisCluster;
-import redis.clients.jedis.JedisPool;
-import redis.clients.jedis.HostAndPort;
-import redis.clients.jedis.ScanParams;
-import redis.clients.jedis.ScanResult;
-import redis.clients.jedis.Protocol;
-import redis.clients.jedis.exceptions.JedisException;
+package rain.mocking.design.tools;
+
+import lombok.extern.slf4j.Slf4j;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+import redis.clients.jedis.*;
 import redis.clients.jedis.params.ScanParams;
 import redis.clients.jedis.resps.ScanResult;
+import redis.clients.jedis.resps.Tuple;
 
-import java.io.IOException;
-import java.io.StringWriter;
-import java.io.PrintWriter;
 import java.util.*;
 import java.util.concurrent.*;
-import java.util.stream.Collectors;
 import java.util.concurrent.atomic.AtomicLong;
 import java.text.SimpleDateFormat;
 
 /**
  * Redis集群数据分析工具 - 用于识别数据倾斜问题并计算各个key及其对应节点的内存占用
  */
+@Slf4j
 public class RedisClusterAnalyzer {
 
+    private static final Logger log = LogManager.getLogger(RedisClusterAnalyzer.class);
     private final JedisCluster jedisCluster;
     private final int scanBatchSize;
     private final ExecutorService executorService;
@@ -35,8 +32,9 @@ public class RedisClusterAnalyzer {
     private final PriorityQueue<KeyMemoryInfo> topKeys;
     
     private final int topKeysCount;
-    private final String reportKeyPrefix;
-    
+    private final String summaryReportKey = "redis:analyzer:report:summary";
+    private final String topKeysReportKey = "redis:analyzer:report:topkeys";
+
     /**
      * 构造函数
      * @param nodes Redis集群节点列表
@@ -44,40 +42,36 @@ public class RedisClusterAnalyzer {
      * @param connectionTimeout 连接超时时间
      * @param soTimeout Socket超时时间
      * @param scanBatchSize SCAN命令每次扫描的key数量
-     * @param maxThreads 最大线程数
      * @param topKeysCount 保留top N大小的key
-     * @param reportKeyPrefix 保存报告的Redis key前缀
      */
-    public RedisClusterAnalyzer(Set<HostAndPort> nodes, String password, 
-                               int connectionTimeout, int soTimeout, 
-                               int scanBatchSize, int maxThreads, int topKeysCount,
-                               String reportKeyPrefix) {
-        this.jedisCluster = new JedisCluster(nodes, connectionTimeout, soTimeout, 
+    public RedisClusterAnalyzer(Set<HostAndPort> nodes, String password,
+                                int connectionTimeout, int soTimeout,
+                                int scanBatchSize, int topKeysCount) {
+        this.jedisCluster = new JedisCluster(nodes, connectionTimeout, soTimeout,
                                             5, password, null);
         this.scanBatchSize = scanBatchSize;
         this.executorService = Executors.newFixedThreadPool(1); // 使用单线程以减少资源占用
         this.topKeysCount = topKeysCount;
-        this.topKeys = new PriorityQueue<>(topKeysCount, Comparator.comparingLong(KeyMemoryInfo::getMemoryBytes));
-        this.reportKeyPrefix = reportKeyPrefix;
+        this.topKeys = new PriorityQueue<>(topKeysCount, Comparator.comparingLong(KeyMemoryInfo::memoryBytes));
     }
     
     /**
      * 分析Redis集群数据分布
      * @return 分析结果
      */
-    public AnalysisResult analyzeCluster() throws InterruptedException, ExecutionException {
-        System.out.println("开始分析Redis集群数据分布...");
+    public AnalysisResult analyzeCluster() throws InterruptedException {
+        log.info("开始分析Redis集群数据分布...");
         long startTime = System.currentTimeMillis();
         
         // 获取所有集群节点
-        Map<String, JedisPool> clusterNodes = jedisCluster.getClusterNodes();
-        System.out.println("集群节点数: " + clusterNodes.size());
+        Map<String, ConnectionPool> clusterNodes = jedisCluster.getClusterNodes();
+        log.info("集群节点数: {}", clusterNodes.size());
         
         // 逐个分析节点，而不是并行分析所有节点
         List<NodeAnalysisResult> nodeResults = new ArrayList<>();
-        for (Map.Entry<String, JedisPool> entry : clusterNodes.entrySet()) {
+        for (Map.Entry<String, ConnectionPool> entry : clusterNodes.entrySet()) {
             String nodeId = entry.getKey();
-            JedisPool pool = entry.getValue();
+            ConnectionPool pool = entry.getValue();
             nodeKeyCountMap.put(nodeId, 0L);
             nodeMemoryUsageMap.put(nodeId, new AtomicLong(0));
             
@@ -108,7 +102,7 @@ public class RedisClusterAnalyzer {
         List<KeyMemoryInfo> largestKeys = new ArrayList<>(topKeysCount);
         KeyMemoryInfo keyInfo;
         while ((keyInfo = topKeys.poll()) != null) {
-            largestKeys.add(0, keyInfo); // 插入到头部，形成降序排列
+            largestKeys.addFirst(keyInfo); // 插入到头部，形成降序排列
         }
         
         long duration = System.currentTimeMillis() - startTime;
@@ -128,18 +122,18 @@ public class RedisClusterAnalyzer {
     /**
      * 分析单个节点的数据
      */
-    private NodeAnalysisResult analyzeNode(String nodeId, JedisPool pool) {
+    private NodeAnalysisResult analyzeNode(String nodeId, ConnectionPool pool) {
         long startTime = System.currentTimeMillis();
         long keyCount = 0;
         long memoryUsage = 0;
         
-        try (var jedis = pool.getResource()) {
-            System.out.println("开始分析节点: " + nodeId);
+        try (Connection jedisConnect = pool.getResource(); Jedis jedis = new Jedis(jedisConnect)) {
+            log.info("开始分析节点: {}", nodeId);
             
             // 检查是否是主节点
             String info = jedis.info("Replication");
             if (info.contains("role:slave")) {
-                System.out.println("跳过从节点: " + nodeId);
+                log.info("跳过从节点: {}", nodeId);
                 return new NodeAnalysisResult(nodeId, 0, 0, Collections.emptyList(), 0);
             }
             
@@ -157,7 +151,7 @@ public class RedisClusterAnalyzer {
                 
                 // 批量处理keys
                 for (String key : keys) {
-                    TimeUnit.MILLISECONDS.sleep(500); // 增加间隔时间减轻Redis负担
+                    TimeUnit.MILLISECONDS.sleep(30); // 增加间隔时间减轻Redis负担
                     try {
                         // 直接处理key，不使用额外线程，避免线程切换开销
                         String keyType = jedis.type(key);
@@ -187,13 +181,12 @@ public class RedisClusterAnalyzer {
             } while (!cursor.equals("0"));
             
             long duration = System.currentTimeMillis() - startTime;
-            System.out.printf("节点%s分析完成，共%d个keys，总内存:%dMB，耗时:%dms%n", 
-                             nodeId, keyCount, memoryUsage / (1024 * 1024), duration);
+            log.info(String.format("节点%s分析完成，共%d个keys，总内存:%dMB，耗时:%dms%n",
+                             nodeId, keyCount, memoryUsage / (1024 * 1024), duration));
             
             return new NodeAnalysisResult(nodeId, keyCount, memoryUsage, nodeLargestKeys, duration);
         } catch (Exception e) {
-            System.err.println("分析节点失败: " + nodeId + ", 错误: " + e.getMessage());
-            e.printStackTrace();
+            log.error("分析节点失败: {}, 错误: {}", nodeId, e.getMessage(), e);
             return new NodeAnalysisResult(nodeId, 0, 0, Collections.emptyList(), 0);
         }
     }
@@ -280,7 +273,7 @@ public class RedisClusterAnalyzer {
                                 .mapToLong(s -> s != null ? s.getBytes().length : 0)
                                 .sum();
                         
-                        if (samples.size() > 0) {
+                        if (!samples.isEmpty()) {
                             double avgSize = sampleBytes / (double) samples.size();
                             listSize = (long) (avgSize * listLength);
                         }
@@ -356,11 +349,11 @@ public class RedisClusterAnalyzer {
                         int loopCount = 0;
                         
                         do {
-                            ScanResult<redis.clients.jedis.Tuple> zsetScanResult = 
+                            ScanResult<Tuple> zsetScanResult = 
                                 jedis.zscan(key, zsetCursor, zsetScanParams);
                             zsetCursor = zsetScanResult.getCursor();
                             
-                            for (redis.clients.jedis.Tuple tuple : zsetScanResult.getResult()) {
+                            for (Tuple tuple : zsetScanResult.getResult()) {
                                 if (sampleCount < zsetSampleSize) {
                                     zsetSamples.add(tuple.getElement());
                                     sampleCount++;
@@ -388,7 +381,7 @@ public class RedisClusterAnalyzer {
                         }
                     } else {
                         // 小型zset可以直接获取全部
-                        Set<String> zsetMembers = jedis.zrange(key, 0, -1);
+                        List<String> zsetMembers = jedis.zrange(key, 0, -1);
                         for (String member : zsetMembers) {
                             zsetSize += member != null ? member.getBytes().length : 0;
                             // 分数也占空间
@@ -425,24 +418,24 @@ public class RedisClusterAnalyzer {
         StringBuilder reportBuilder = new StringBuilder();
         reportBuilder.append("===== Redis集群数据分析报告 =====\n");
         reportBuilder.append("分析时间: ").append(new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date())).append("\n");
-        reportBuilder.append("分析耗时: ").append(result.getProcessingTime()).append("ms\n");
-        reportBuilder.append("总key数量: ").append(result.getTotalKeys()).append("\n");
-        reportBuilder.append("总内存使用: ").append(formatSize(result.getTotalMemoryBytes())).append("\n\n");
+        reportBuilder.append("分析耗时: ").append(result.processingTime()).append("ms\n");
+        reportBuilder.append("总key数量: ").append(result.totalKeys()).append("\n");
+        reportBuilder.append("总内存使用: ").append(formatSize(result.totalMemoryBytes())).append("\n\n");
         
         reportBuilder.append("----- 节点数据分布 -----\n");
         List<Map.Entry<String, Double>> sortedNodes = 
-            result.getNodeMemoryPercentage().entrySet().stream()
+            result.nodeMemoryPercentage().entrySet().stream()
                 .sorted(Map.Entry.<String, Double>comparingByValue().reversed())
-                .collect(Collectors.toList());
+                .toList();
         
         // 防止除零错误
-        long totalKeys = Math.max(1, result.getTotalKeys());
+        long totalKeys = Math.max(1, result.totalKeys());
         
         for (Map.Entry<String, Double> entry : sortedNodes) {
             String nodeId = entry.getKey();
-            long keyCount = result.getNodeKeyCountMap().getOrDefault(nodeId, 0L);
+            long keyCount = result.nodeKeyCountMap().getOrDefault(nodeId, 0L);
             double memPercentage = entry.getValue();
-            long memBytes = (long)(result.getTotalMemoryBytes() * memPercentage / 100);
+            long memBytes = (long)(result.totalMemoryBytes() * memPercentage / 100);
             
             reportBuilder.append(String.format("节点: %s\n  Key数量: %d (%.2f%%)\n  内存使用: %s (%.2f%%)\n",
                            nodeId,
@@ -453,26 +446,26 @@ public class RedisClusterAnalyzer {
         }
         
         reportBuilder.append("\n----- 最大Key列表 -----\n");
-        for (int i = 0; i < Math.min(result.getLargestKeys().size(), 20); i++) {
-            KeyMemoryInfo key = result.getLargestKeys().get(i);
+        for (int i = 0; i < Math.min(result.largestKeys().size(), 20); i++) {
+            KeyMemoryInfo key = result.largestKeys().get(i);
             reportBuilder.append(String.format("%d. Key: %s\n   类型: %s\n   大小: %s\n   节点: %s\n",
                            i + 1,
-                           key.getKey(),
-                           key.getType(),
-                           formatSize(key.getMemoryBytes()),
-                           key.getNodeId()));
+                           key.key(),
+                           key.type(),
+                           formatSize(key.memoryBytes()),
+                           key.nodeId()));
         }
         
         reportBuilder.append("\n===== 数据倾斜分析 =====\n");
-        double maxPercentage = sortedNodes.isEmpty() ? 0 : sortedNodes.get(0).getValue();
+        double maxPercentage = sortedNodes.isEmpty() ? 0 : sortedNodes.getFirst().getValue();
         double minPercentage = sortedNodes.isEmpty() ? 0 : 
-                             sortedNodes.get(sortedNodes.size() - 1).getValue();
+                             sortedNodes.getLast().getValue();
         
         reportBuilder.append(String.format("内存使用最高的节点: %s (%.2f%%)\n", 
-                       sortedNodes.isEmpty() ? "无" : sortedNodes.get(0).getKey(), 
+                       sortedNodes.isEmpty() ? "无" : sortedNodes.getFirst().getKey(),
                        maxPercentage));
         reportBuilder.append(String.format("内存使用最低的节点: %s (%.2f%%)\n",
-                       sortedNodes.isEmpty() ? "无" : sortedNodes.get(sortedNodes.size() - 1).getKey(),
+                       sortedNodes.isEmpty() ? "无" : sortedNodes.getLast().getKey(),
                        minPercentage));
         reportBuilder.append(String.format("最大/最小内存比率: %.2f\n", 
                        minPercentage > 0 ? maxPercentage / minPercentage : 0));
@@ -490,15 +483,15 @@ public class RedisClusterAnalyzer {
             reportBuilder.append("3. 检查是否存在不合理的数据设计或过期策略\n");
             reportBuilder.append("4. 考虑调整集群槽位分配\n");
             
-            if (!result.getLargestKeys().isEmpty()) {
+            if (!result.largestKeys().isEmpty()) {
                 reportBuilder.append("\n建议优先处理的大key:\n");
-                for (int i = 0; i < Math.min(result.getLargestKeys().size(), 5); i++) {
-                    KeyMemoryInfo key = result.getLargestKeys().get(i);
+                for (int i = 0; i < Math.min(result.largestKeys().size(), 5); i++) {
+                    KeyMemoryInfo key = result.largestKeys().get(i);
                     reportBuilder.append(String.format("%d. %s (类型:%s, 大小:%s)\n",
                                    i + 1,
-                                   key.getKey(),
-                                   key.getType(),
-                                   formatSize(key.getMemoryBytes())));
+                                   key.key(),
+                                   key.type(),
+                                   formatSize(key.memoryBytes())));
                 }
             }
         }
@@ -508,76 +501,36 @@ public class RedisClusterAnalyzer {
         topKeysBuilder.append("===== Top 100 大Key列表 =====\n");
         topKeysBuilder.append("分析时间: ").append(new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date())).append("\n\n");
         
-        for (int i = 0; i < result.getLargestKeys().size(); i++) {
-            KeyMemoryInfo key = result.getLargestKeys().get(i);
+        for (int i = 0; i < result.largestKeys().size(); i++) {
+            KeyMemoryInfo key = result.largestKeys().get(i);
             topKeysBuilder.append(String.format("%d. Key: %s\n   类型: %s\n   大小: %s\n   节点: %s\n\n",
                            i + 1,
-                           key.getKey(),
-                           key.getType(),
-                           formatSize(key.getMemoryBytes()),
-                           key.getNodeId()));
+                           key.key(),
+                           key.type(),
+                           formatSize(key.memoryBytes()),
+                           key.nodeId()));
         }
-        
-        // 生成报告key名称，包含时间戳
-        String timestamp = new SimpleDateFormat("yyyyMMdd_HHmmss").format(new Date());
-        String summaryReportKey = reportKeyPrefix + ":summary:" + timestamp;
-        String topKeysReportKey = reportKeyPrefix + ":topkeys:" + timestamp;
         
         // 保存报告到Redis
         try {
             jedisCluster.set(summaryReportKey, reportBuilder.toString());
-            System.out.println("分析摘要报告已保存到Redis key: " + summaryReportKey);
+            log.info("分析摘要报告已保存到Redis key: " + summaryReportKey);
             
             jedisCluster.set(topKeysReportKey, topKeysBuilder.toString());
-            System.out.println("大Key详细报告已保存到Redis key: " + topKeysReportKey);
+            log.info("大Key详细报告已保存到Redis key: " + topKeysReportKey);
             
             // 设置过期时间，例如7天
             jedisCluster.expire(summaryReportKey, 7 * 24 * 60 * 60);
             jedisCluster.expire(topKeysReportKey, 7 * 24 * 60 * 60);
-            
-            // 保存索引key，用于查询最近的报告
-            String indexKey = reportKeyPrefix + ":reports";
-            jedisCluster.lpush(indexKey, summaryReportKey, topKeysReportKey);
-            jedisCluster.ltrim(indexKey, 0, 9); // 只保留最近10份报告
-            jedisCluster.expire(indexKey, 30 * 24 * 60 * 60); // 30天过期
-            
+
             // 打印报告内容到控制台方便查看
-            System.out.println("\n" + reportBuilder.toString());
+            log.info("\n{}", reportBuilder);
         } catch (Exception e) {
-            System.err.println("保存报告到Redis失败: " + e.getMessage());
-            e.printStackTrace();
-            
+            log.error("保存报告到Redis失败: {}", e.getMessage(), e);
+
             // 保存失败时，打印报告到控制台
             System.out.println("\n===== 由于保存到Redis失败，报告内容仅打印在控制台 =====");
-            System.out.println(reportBuilder.toString());
-        }
-    }
-    
-    /**
-     * 处理异常并将堆栈信息保存到Redis
-     */
-    public void saveExceptionToRedis(Exception e, String operationDescription) {
-        try {
-            String timestamp = new SimpleDateFormat("yyyyMMdd_HHmmss").format(new Date());
-            String errorKey = reportKeyPrefix + ":error:" + timestamp;
-            
-            StringWriter sw = new StringWriter();
-            PrintWriter pw = new PrintWriter(sw);
-            e.printStackTrace(pw);
-            
-            String errorReport = "===== Redis分析工具错误报告 =====\n" +
-                               "时间: " + new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date()) + "\n" +
-                               "操作: " + operationDescription + "\n" +
-                               "错误信息: " + e.getMessage() + "\n\n" +
-                               "堆栈跟踪:\n" + sw.toString();
-            
-            jedisCluster.set(errorKey, errorReport);
-            jedisCluster.expire(errorKey, 7 * 24 * 60 * 60); // 7天过期
-            
-            System.err.println("错误信息已保存到Redis key: " + errorKey);
-        } catch (Exception ex) {
-            System.err.println("保存错误信息到Redis失败: " + ex.getMessage());
-            ex.printStackTrace();
+            System.out.println(reportBuilder);
         }
     }
     
@@ -602,87 +555,33 @@ public class RedisClusterAnalyzer {
     public void close() {
         try {
             jedisCluster.close();
-        } catch (IOException e) {
-            e.printStackTrace();
+        } catch (Exception e) {
+            log.error("jedis close unknown error", e);
         }
     }
-    
+
     /**
-     * 单个Key的内存占用信息
-     */
-    public static class KeyMemoryInfo {
-        private final String key;
-        private final String nodeId;
-        private final long memoryBytes;
-        private final String type;
-        
-        public KeyMemoryInfo(String key, String nodeId, long memoryBytes, String type) {
-            this.key = key;
-            this.nodeId = nodeId;
-            this.memoryBytes = memoryBytes;
-            this.type = type;
-        }
-        
-        public String getKey() { return key; }
-        public String getNodeId() { return nodeId; }
-        public long getMemoryBytes() { return memoryBytes; }
-        public String getType() { return type; }
+         * 单个Key的内存占用信息
+         */
+        public record KeyMemoryInfo(String key, String nodeId, long memoryBytes, String type) {
     }
     
     /**
      * 单个节点的分析结果
      */
     public static class NodeAnalysisResult {
-        private final String nodeId;
-        private final long keyCount;
-        private final long memoryUsage;
-        private final List<KeyMemoryInfo> largestKeys;
-        private final long processingTime;
-        
-        public NodeAnalysisResult(String nodeId, long keyCount, long memoryUsage, 
+
+        public NodeAnalysisResult(String nodeId, long keyCount, long memoryUsage,
                                  List<KeyMemoryInfo> largestKeys, long processingTime) {
-            this.nodeId = nodeId;
-            this.keyCount = keyCount;
-            this.memoryUsage = memoryUsage;
-            this.largestKeys = largestKeys;
-            this.processingTime = processingTime;
         }
     }
-    
+
     /**
-     * 整体分析结果
-     */
-    public static class AnalysisResult {
-        private final long totalKeys;
-        private final long totalMemoryBytes;
-        private final Map<String, Long> nodeKeyCountMap;
-        private final Map<String, Double> nodeMemoryPercentage;
-        private final List<KeyMemoryInfo> largestKeys;
-        private final List<NodeAnalysisResult> nodeResults;
-        private final long processingTime;
-        
-        public AnalysisResult(long totalKeys, long totalMemoryBytes, 
-                             Map<String, Long> nodeKeyCountMap,
-                             Map<String, Double> nodeMemoryPercentage,
-                             List<KeyMemoryInfo> largestKeys,
-                             List<NodeAnalysisResult> nodeResults,
-                             long processingTime) {
-            this.totalKeys = totalKeys;
-            this.totalMemoryBytes = totalMemoryBytes;
-            this.nodeKeyCountMap = nodeKeyCountMap;
-            this.nodeMemoryPercentage = nodeMemoryPercentage;
-            this.largestKeys = largestKeys;
-            this.nodeResults = nodeResults;
-            this.processingTime = processingTime;
-        }
-        
-        public long getTotalKeys() { return totalKeys; }
-        public long getTotalMemoryBytes() { return totalMemoryBytes; }
-        public Map<String, Long> getNodeKeyCountMap() { return nodeKeyCountMap; }
-        public Map<String, Double> getNodeMemoryPercentage() { return nodeMemoryPercentage; }
-        public List<KeyMemoryInfo> getLargestKeys() { return largestKeys; }
-        public List<NodeAnalysisResult> getNodeResults() { return nodeResults; }
-        public long getProcessingTime() { return processingTime; }
+         * 整体分析结果
+         */
+        public record AnalysisResult(long totalKeys, long totalMemoryBytes, Map<String, Long> nodeKeyCountMap,
+                                     Map<String, Double> nodeMemoryPercentage, List<KeyMemoryInfo> largestKeys,
+                                     List<NodeAnalysisResult> nodeResults, long processingTime) {
     }
     
     /**
@@ -695,20 +594,15 @@ public class RedisClusterAnalyzer {
         nodes.add(new HostAndPort("redis-node1", 6379));
         nodes.add(new HostAndPort("redis-node2", 6379));
         nodes.add(new HostAndPort("redis-node3", 6379));
-        
-        // 用于存储报告的Redis key前缀
-        String reportKeyPrefix = "redis:analyzer:report";
-        
+
         // 创建分析器实例
         RedisClusterAnalyzer analyzer = new RedisClusterAnalyzer(
             nodes,                  // 集群节点
-            "password",             // 密码，如果没有则传null
+            null,             // 密码，如果没有则传null
             5000,                   // 连接超时(ms)
             10000,                  // Socket超时(ms)
             100,                    // 每次扫描100个key
-            Runtime.getRuntime().availableProcessors(), // 线程数等于CPU核心数
-            100,                    // 保留100个最大key
-            reportKeyPrefix         // 报告key前缀
+            100                    // 保留100个最大key
         );
         
         try {
@@ -719,11 +613,7 @@ public class RedisClusterAnalyzer {
             analyzer.saveAnalysisReportToRedis(result);
             
         } catch (Exception e) {
-            System.err.println("分析过程中发生错误: " + e.getMessage());
-            e.printStackTrace();
-            
-            // 保存异常信息到Redis
-            analyzer.saveExceptionToRedis(e, "analyzeCluster");
+            log.error("分析过程中发生错误: {}", e.getMessage(), e);
         } finally {
             // 关闭资源
             analyzer.close();

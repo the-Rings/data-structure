@@ -1,4 +1,4 @@
-package heap;
+package rain.mocking.design.heap;
 
 import java.util.Arrays;
 

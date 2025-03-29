@@ -1,4 +1,4 @@
-package interview.thread_base;
+package rain.mocking.design.interview.thread_base;
 
 import java.util.concurrent.locks.ReentrantLock;
 

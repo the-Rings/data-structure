@@ -1,4 +1,4 @@
-package heap;
+package rain.mocking.design.heap;
 
 public class Heap {
   public int[] arr;

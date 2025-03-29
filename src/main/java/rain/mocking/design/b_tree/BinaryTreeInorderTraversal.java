@@ -1,4 +1,4 @@
-package b_tree;
+package rain.mocking.design.b_tree;
 
 public class BinaryTreeInorderTraversal {
   public void preOrder(TreeNode<?> root) {

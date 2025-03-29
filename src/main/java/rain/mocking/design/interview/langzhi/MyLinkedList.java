@@ -1,4 +1,4 @@
-package interview.langzhi;
+package rain.mocking.design.interview.langzhi;
 
 /**
  * @author mao
